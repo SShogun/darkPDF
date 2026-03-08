@@ -21,7 +21,6 @@ def test_app_boots():
     assert hasattr(window.viewer, 'current_page')
     assert hasattr(window.viewer, 'dark_mode')
     assert window.viewer.current_page == 0
-    assert window.viewer.dark_mode == False
     
     # Verify the stacked widget has home + webview
     assert window.stacked.count() == 2

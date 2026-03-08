@@ -2,28 +2,32 @@
 ViewerController — bridges the PyQt6 UI with an embedded PDF.js viewer
 running inside a QWebEngineView, using a custom URL scheme to bypass
 Chromium's file:// CORS restrictions.
+
+Dark Mode uses a hybrid approach:
+  1. PyMuPDF renders each page with inverted colors → saved to temp PDF
+  2. PDF.js loads the dark PDF for full interactivity (text selection, links)
 """
 
-from PyQt6.QtCore import QObject, pyqtSignal, QUrl, QTimer, QByteArray
+from PyQt6.QtCore import QObject, pyqtSignal, QUrl, QTimer, QByteArray, QThread
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWebEngineCore import (
     QWebEngineUrlScheme,
     QWebEngineUrlSchemeHandler,
     QWebEngineUrlRequestJob,
     QWebEngineProfile,
-    QWebEnginePage,
     QWebEngineSettings,
 )
-from PyQt6.QtWidgets import QApplication
 import os
 import mimetypes
 from pathlib import Path
 
+from darkmode import generate_dark_pdf, get_dark_pdf_cache_path
+
 
 # ── Custom URL Scheme Handler ──────────────────────────────────
-# Must be registered BEFORE QApplication is created.
 
 SCHEME_NAME = b"darkpdf"
+
 
 def register_scheme():
     """Call this ONCE before QApplication() to register the custom scheme."""
@@ -55,17 +59,12 @@ class LocalFileSchemeHandler(QWebEngineUrlSchemeHandler):
         host = url.host()
         path = url.path()
 
-        # Determine the local file to serve
         if host == "viewer":
-            # Map to the pdfjs_viewer directory
-            # path starts with /, so strip it
             local_path = self.pdfjs_root / path.lstrip("/")
         elif host == "pdffile":
-            # The absolute file path is encoded in the URL path
-            # On Windows, the path starts with /C:/... so strip leading /
             raw_path = path
             if len(raw_path) > 2 and raw_path[0] == '/' and raw_path[2] == ':':
-                raw_path = raw_path[1:]  # strip leading /
+                raw_path = raw_path[1:]
             local_path = Path(raw_path)
         else:
             job.fail(QWebEngineUrlRequestJob.Error.UrlNotFound)
@@ -77,7 +76,6 @@ class LocalFileSchemeHandler(QWebEngineUrlSchemeHandler):
             job.fail(QWebEngineUrlRequestJob.Error.UrlNotFound)
             return
 
-        # Guess MIME type
         mime_type, _ = mimetypes.guess_type(local_path_str)
         if mime_type is None:
             mime_type = "application/octet-stream"
@@ -93,21 +91,50 @@ class LocalFileSchemeHandler(QWebEngineUrlSchemeHandler):
             job.fail(QWebEngineUrlRequestJob.Error.RequestFailed)
 
 
+# ── Background Dark PDF Generator ─────────────────────────────
+
+class DarkPDFWorker(QThread):
+    """Generates a dark-mode PDF in a background thread."""
+    finished = pyqtSignal(str)   # emits the path to the dark PDF
+    progress = pyqtSignal(str)   # emits status messages
+    error = pyqtSignal(str)
+
+    def __init__(self, input_path: str, output_path: str, brightness: float = 0.85):
+        super().__init__()
+        self.input_path = input_path
+        self.output_path = output_path
+        self.brightness = brightness
+
+    def run(self):
+        try:
+            self.progress.emit("Generating dark mode PDF...")
+            result = generate_dark_pdf(self.input_path, self.output_path, self.brightness)
+            self.finished.emit(result)
+        except Exception as e:
+            self.error.emit(str(e))
+
+
 # ── ViewerController ──────────────────────────────────────────
 
 class ViewerController(QObject):
     document_loaded = pyqtSignal(int)
     page_changed = pyqtSignal(int)
+    dark_mode_started = pyqtSignal()      # show loading overlay
+    dark_mode_ready = pyqtSignal()         # hide loading overlay
+    dark_mode_error = pyqtSignal(str)
 
     def __init__(self, web_view: QWebEngineView):
         super().__init__()
         self.web_view = web_view
         self.current_page = 0
         self.zoom = 1.0
+        self.brightness = 1.0
         self.dark_mode = False
         self.current_filepath = ""
+        self._dark_pdf_path = ""
         self._load_connected = False
         self.scroll_timer = None
+        self._worker = None
 
         # Paths
         base_dir = Path(__file__).parent.absolute()
@@ -127,29 +154,54 @@ class ViewerController(QObject):
     # ── Dark Mode ─────────────────────────────────────────────
 
     def toggle_dark_mode(self, enabled: bool):
+        if not self.current_filepath:
+            self.dark_mode = enabled
+            return
+
         self.dark_mode = enabled
-        self._apply_dark_mode_css()
+
+        if enabled:
+            # Check if we already have a cached dark PDF
+            cache_path = get_dark_pdf_cache_path(self.current_filepath)
+            if os.path.exists(cache_path):
+                # Already cached! Just swap immediately
+                self._dark_pdf_path = cache_path
+                self._load_pdf_in_viewer(cache_path)
+                return
+
+            # Need to generate — kick off background worker
+            self.dark_mode_started.emit()
+            self._worker = DarkPDFWorker(self.current_filepath, cache_path)
+            self._worker.finished.connect(self._on_dark_pdf_ready)
+            self._worker.error.connect(self._on_dark_pdf_error)
+            self._worker.start()
+        else:
+            # Switch back to original PDF
+            self._load_pdf_in_viewer(self.current_filepath)
+
+    def _on_dark_pdf_ready(self, dark_path: str):
+        self._dark_pdf_path = dark_path
+        self._load_pdf_in_viewer(dark_path)
+        self.dark_mode_ready.emit()
+        self._worker = None
+
+    def _on_dark_pdf_error(self, error_msg: str):
+        print(f"Dark mode error: {error_msg}")
+        self.dark_mode = False
+        self.dark_mode_error.emit(error_msg)
+        self.dark_mode_ready.emit()
+        self._worker = None
 
     def set_theme_settings(self, theme: dict):
-        # Only brightness is relevant now — we handle it via CSS opacity
-        brightness = theme.get("brightness", 1.0)
-        js = f"document.getElementById('viewerContainer').style.opacity = {brightness};"
-        self.web_view.page().runJavaScript(js)
+        """Handle brightness changes instantly via CSS filter."""
+        if "brightness" in theme:
+            self.brightness = theme["brightness"]
+            self._apply_brightness()
 
-    def _apply_dark_mode_css(self):
-        if self.dark_mode:
-            css = "html { filter: invert(90%) hue-rotate(180deg) !important; } img, canvas { filter: invert(100%) hue-rotate(180deg) !important; }"
-        else:
-            css = "html { filter: none !important; } img, canvas { filter: none !important; }"
-
-        js = f"""
-        (function() {{
-            var s = document.getElementById('darkpdf-theme');
-            if (!s) {{ s = document.createElement('style'); s.id = 'darkpdf-theme'; document.head.appendChild(s); }}
-            s.textContent = `{css}`;
-        }})();
-        """
-        self.web_view.page().runJavaScript(js)
+    def _apply_brightness(self):
+        js = f"document.body.style.filter = 'brightness({self.brightness})';"
+        if self.web_view.page():
+            self.web_view.page().runJavaScript(js)
 
     # ── Document Loading ──────────────────────────────────────
 
@@ -159,19 +211,44 @@ class ViewerController(QObject):
 
         self.current_filepath = filepath
         self.current_page = initial_page
+        self._dark_pdf_path = ""
 
         # Stop any existing timer
         if self.scroll_timer:
             self.scroll_timer.stop()
 
-        # Build the custom-scheme URL for the PDF file
-        # On Windows, filepath is like C:\foo\bar.pdf → darkpdf://pdffile/C:/foo/bar.pdf
+        # If dark mode is active, check for cached dark version
+        if self.dark_mode:
+            cache_path = get_dark_pdf_cache_path(filepath)
+            if os.path.exists(cache_path):
+                self._dark_pdf_path = cache_path
+                self._load_pdf_in_viewer(cache_path, initial_page)
+                return
+            else:
+                # Generate dark version
+                self.dark_mode_started.emit()
+                self._worker = DarkPDFWorker(filepath, cache_path)
+                self._worker.finished.connect(lambda p: self._on_dark_pdf_ready_with_page(p, initial_page))
+                self._worker.error.connect(self._on_dark_pdf_error)
+                self._worker.start()
+                return
+
+        self._load_pdf_in_viewer(filepath, initial_page)
+
+    def _on_dark_pdf_ready_with_page(self, dark_path: str, initial_page: int):
+        self._dark_pdf_path = dark_path
+        self._load_pdf_in_viewer(dark_path, initial_page)
+        self.dark_mode_ready.emit()
+        self._worker = None
+
+    def _load_pdf_in_viewer(self, filepath: str, page: int = None):
+        """Load a PDF file into the PDF.js viewer."""
+        if page is None:
+            page = self.current_page
+
         pdf_url = "darkpdf://pdffile/" + filepath.replace("\\", "/")
+        viewer_url = f"darkpdf://viewer/web/viewer.html?file={pdf_url}#page={page + 1}"
 
-        # Build the viewer URL
-        viewer_url = f"darkpdf://viewer/web/viewer.html?file={pdf_url}#page={initial_page + 1}"
-
-        # Connect loadFinished only once
         if not self._load_connected:
             self.web_view.loadFinished.connect(self._on_load_finished)
             self._load_connected = True
@@ -181,9 +258,6 @@ class ViewerController(QObject):
     def _on_load_finished(self, ok: bool):
         if not ok:
             return
-
-        # Apply dark mode CSS
-        self._apply_dark_mode_css()
 
         # Hide PDF.js' own toolbar (we have our own controls)
         js_hide = """
@@ -195,6 +269,7 @@ class ViewerController(QObject):
         })();
         """
         self.web_view.page().runJavaScript(js_hide)
+        self._apply_brightness()
 
         # Poll for page count (PDF.js may take a moment to parse)
         QTimer.singleShot(800, self._query_page_count)
@@ -214,7 +289,6 @@ class ViewerController(QObject):
         if count and int(count) > 0:
             self.document_loaded.emit(int(count))
         else:
-            # Retry after a short delay — PDF might still be loading
             QTimer.singleShot(500, self._query_page_count)
 
     # ── Page Polling ──────────────────────────────────────────

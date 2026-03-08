@@ -1,10 +1,11 @@
 from PyQt6.QtWidgets import (QMainWindow, QFileDialog, QLabel, QToolBar, 
     QSlider, QDockWidget, QTextEdit, QVBoxLayout, QWidget, QPushButton, QHBoxLayout, 
-    QLineEdit, QStackedWidget)
+    QLineEdit, QStackedWidget, QProgressDialog, QMessageBox)
 from PyQt6.QtGui import QAction, QShortcut, QKeySequence
 from PyQt6.QtCore import Qt, QEvent, QUrl
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 
+import os
 from viewer import ViewerController
 from ui.home_widget import HomeWidget
 from utils.user_data_manager import UserDataManager
@@ -23,6 +24,9 @@ class MainWindow(QMainWindow):
         self.viewer = ViewerController(self.web_view)
         self.viewer.document_loaded.connect(self.document_loaded)
         self.viewer.page_changed.connect(self._on_viewer_page_changed)
+        self.viewer.dark_mode_started.connect(self._on_dark_mode_started)
+        self.viewer.dark_mode_ready.connect(self._on_dark_mode_ready)
+        self.viewer.dark_mode_error.connect(self._on_dark_mode_error)
 
         # ── Central Stacked Widget (prevents widget destruction on view switch) ──
         self.stacked = QStackedWidget(self)
@@ -376,6 +380,27 @@ class MainWindow(QMainWindow):
         if hasattr(self, 'dark_mode_btn'):
             self.dark_mode_btn.setChecked(checked)
 
+    def _on_dark_mode_started(self):
+        self.loading_dialog = QProgressDialog("Generating Dark Mode PDF...\nThis may take a moment for large files.", None, 0, 0, self)
+        self.loading_dialog.setWindowTitle("Please Wait")
+        self.loading_dialog.setWindowModality(Qt.WindowModality.WindowModal)
+        self.loading_dialog.setCancelButton(None)
+        self.loading_dialog.show()
+
+    def _on_dark_mode_ready(self):
+        if hasattr(self, 'loading_dialog') and self.loading_dialog:
+            self.loading_dialog.close()
+            self.loading_dialog = None
+
+    def _on_dark_mode_error(self, error_msg):
+        if hasattr(self, 'loading_dialog') and self.loading_dialog:
+            self.loading_dialog.close()
+            self.loading_dialog = None
+        QMessageBox.warning(self, "Dark Mode Error", f"Failed to generate dark PDF:\n{error_msg}")
+        self.dark_mode_action_menu.setChecked(False)
+        if hasattr(self, 'dark_mode_btn'):
+            self.dark_mode_btn.setChecked(False)
+
     # Annotation tools natively handled by PDF.js. Removed custom python handlers.
 
     def _toggle_notes(self, checked=None):
@@ -400,8 +425,12 @@ class MainWindow(QMainWindow):
                  "PDF Files (*.pdf)"
             )
         if filepath:
-            print(f"Opening file: {filepath}")
-            
+            if not os.path.exists(filepath):
+                QMessageBox.warning(self, "File Not Found", f"The file could not be found:\n{filepath}")
+                self.user_data.get_recent_files() # triggers internal cleanup
+                self.home_widget.update_recent_files()
+                return
+
             # Restore page progress BEFORE opening so it isn't overwritten
             last_page = self.user_data.get_last_read_page(filepath)
             

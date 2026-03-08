@@ -7,11 +7,10 @@ This document tracks all features, architectural changes, and bug fixes applied 
 - **BREAKING** Migrated from PySide6 to PyQt6 (+ PyQt6-WebEngine) for WebEngine compatibility on Python 3.13.
 - **Added** a custom `darkpdf://` URL scheme handler (`LocalFileSchemeHandler`) to bypass Chromium's `file://` CORS restrictions.
 - **Added** native text selection, hyperlink clicking, and searchability — all handled natively by PDF.js.
-- **Changed** Dark Mode to CSS filter injection (`invert(90%) hue-rotate(180deg)`) instead of NumPy pixel manipulation.
-- **Changed** Brightness control to CSS opacity instead of NumPy channel scaling.
-- **Removed** PyMuPDF dependency (`fitz`), `renderer.py`, `darkmode.py`, `image_utils.py`, `pdf_label.py`.
-- **Removed** Python-side highlight, eraser, and comment annotation tools (now handled natively by PDF.js).
-- **Removed** Minimap widget (incompatible with WebEngine architecture).
+- **Changed** Dark Mode architecture into a Hybrid approach: `PyMuPDF` is used in a background thread to generate an inverted, anti-aliased visual copy of the PDF (saved to a temp file), while preserving the invisible text layer and hyperlinks.
+- **Optimized** Dark Mode generation: Decoupled brightness adjustments from PyMuPDF (removing slow per-pixel NumPy calculations) and replaced them with instantaneous CSS `filter: brightness()` injection. Reduced PyMuPDF render scale for exponential generation speedups.
+- **Added** a `QProgressDialog` loading overlay in the main window to notify users while large PDFs are being converted to Dark Mode.
+- **Removed** `utils/image_utils.py` and `ui/pdf_label.py`. `darkmode.py` and `renderer.py` logic was consolidated for background PDF generation.
 
 ## [v1.5.0] - Stability, Testing, & Undo Mechanics
 - **Added** an internal 20-step Undo Stack! Pressing `Ctrl + Z` seamlessly restores previous annotation states (Highlights & Erases).

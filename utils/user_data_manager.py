@@ -97,8 +97,16 @@ class UserDataManager:
 
     def save(self):
         self.config_dir.mkdir(parents=True, exist_ok=True)
+        temp_file = self.settings_file.with_suffix(".tmp")
         try:
-            with open(self.settings_file, "w", encoding="utf-8") as f:
+            with open(temp_file, "w", encoding="utf-8") as f:
                 json.dump(self.data, f, indent=4)
+            # Atomic rename to prevent corruption on crash
+            temp_file.replace(self.settings_file)
         except Exception as e:
+            try:
+                if temp_file.exists():
+                    temp_file.unlink()
+            except:
+                pass
             print(f"Error saving settings: {e}")
