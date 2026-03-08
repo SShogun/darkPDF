@@ -1,10 +1,10 @@
-from PySide6.QtWidgets import QListWidget, QListWidgetItem, QListView
-from PySide6.QtCore import Qt, QSize, Signal
-from PySide6.QtGui import QIcon
+from PyQt6.QtWidgets import QListWidget, QListWidgetItem, QListView
+from PyQt6.QtCore import Qt, QSize, pyqtSignal
+from PyQt6.QtGui import QIcon
 from utils.image_utils import get_qimage
 
 class MinimapWidget(QListWidget):
-    page_selected = Signal(int)
+    page_selected = pyqtSignal(int)
 
     def __init__(self, renderer):
         super().__init__()
@@ -43,7 +43,7 @@ class MinimapWidget(QListWidget):
                 
             if pix:
                 qimg = get_qimage(pix, dark_mode, bboxes, theme)
-                from PySide6.QtGui import QPixmap
+                from PyQt6.QtGui import QPixmap
                 qpixmap = QPixmap.fromImage(qimg)
                 
                 item = QListWidgetItem()

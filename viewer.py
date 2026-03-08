@@ -1,260 +1,253 @@
-from PySide6.QtCore import QObject, Signal, QRect
-from PySide6.QtGui import QImage
-import fitz
-import os
-import tempfile
-import shutil
-import copy
+"""
+ViewerController — bridges the PyQt6 UI with an embedded PDF.js viewer
+running inside a QWebEngineView, using a custom URL scheme to bypass
+Chromium's file:// CORS restrictions.
+"""
 
-from renderer import PDFRenderer
-from utils.image_utils import get_qimage
+from PyQt6.QtCore import QObject, pyqtSignal, QUrl, QTimer, QByteArray
+from PyQt6.QtWebEngineWidgets import QWebEngineView
+from PyQt6.QtWebEngineCore import (
+    QWebEngineUrlScheme,
+    QWebEngineUrlSchemeHandler,
+    QWebEngineUrlRequestJob,
+    QWebEngineProfile,
+    QWebEnginePage,
+    QWebEngineSettings,
+)
+from PyQt6.QtWidgets import QApplication
+import os
+import mimetypes
+from pathlib import Path
+
+
+# ── Custom URL Scheme Handler ──────────────────────────────────
+# Must be registered BEFORE QApplication is created.
+
+SCHEME_NAME = b"darkpdf"
+
+def register_scheme():
+    """Call this ONCE before QApplication() to register the custom scheme."""
+    scheme = QWebEngineUrlScheme(SCHEME_NAME)
+    scheme.setSyntax(QWebEngineUrlScheme.Syntax.Path)
+    scheme.setFlags(
+        QWebEngineUrlScheme.Flag.SecureScheme
+        | QWebEngineUrlScheme.Flag.LocalScheme
+        | QWebEngineUrlScheme.Flag.LocalAccessAllowed
+        | QWebEngineUrlScheme.Flag.CorsEnabled
+    )
+    QWebEngineUrlScheme.registerScheme(scheme)
+
+
+class LocalFileSchemeHandler(QWebEngineUrlSchemeHandler):
+    """Serves local files through the darkpdf:// scheme.
+
+    URL layout:
+      darkpdf://viewer/web/viewer.html   →  <pdfjs_root>/web/viewer.html
+      darkpdf://pdffile/<abs_path>       →  reads the absolute file path
+    """
+
+    def __init__(self, pdfjs_root: Path, parent=None):
+        super().__init__(parent)
+        self.pdfjs_root = pdfjs_root
+
+    def requestStarted(self, job: QWebEngineUrlRequestJob):
+        url = job.requestUrl()
+        host = url.host()
+        path = url.path()
+
+        # Determine the local file to serve
+        if host == "viewer":
+            # Map to the pdfjs_viewer directory
+            # path starts with /, so strip it
+            local_path = self.pdfjs_root / path.lstrip("/")
+        elif host == "pdffile":
+            # The absolute file path is encoded in the URL path
+            # On Windows, the path starts with /C:/... so strip leading /
+            raw_path = path
+            if len(raw_path) > 2 and raw_path[0] == '/' and raw_path[2] == ':':
+                raw_path = raw_path[1:]  # strip leading /
+            local_path = Path(raw_path)
+        else:
+            job.fail(QWebEngineUrlRequestJob.Error.UrlNotFound)
+            return
+
+        local_path_str = str(local_path)
+
+        if not os.path.isfile(local_path_str):
+            job.fail(QWebEngineUrlRequestJob.Error.UrlNotFound)
+            return
+
+        # Guess MIME type
+        mime_type, _ = mimetypes.guess_type(local_path_str)
+        if mime_type is None:
+            mime_type = "application/octet-stream"
+
+        try:
+            from PyQt6.QtCore import QFile, QIODevice
+            f = QFile(local_path_str, job)
+            if f.open(QIODevice.OpenModeFlag.ReadOnly):
+                job.reply(QByteArray(mime_type.encode()), f)
+            else:
+                job.fail(QWebEngineUrlRequestJob.Error.RequestFailed)
+        except Exception:
+            job.fail(QWebEngineUrlRequestJob.Error.RequestFailed)
+
+
+# ── ViewerController ──────────────────────────────────────────
 
 class ViewerController(QObject):
-    # Sends out QImage objects when a page is rendered
-    page_rendered = Signal(QImage)
-    document_loaded = Signal(int)
-    links_extracted = Signal(list)
+    document_loaded = pyqtSignal(int)
+    page_changed = pyqtSignal(int)
 
-    MAX_UNDO_STEPS = 20
-
-    def __init__(self):
+    def __init__(self, web_view: QWebEngineView):
         super().__init__()
-        self.renderer = PDFRenderer()
+        self.web_view = web_view
         self.current_page = 0
         self.zoom = 1.0
         self.dark_mode = False
-        self.theme_settings = {}
-        self._undo_stack = []  # list of (page_index, annot_xrefs_snapshot) tuples
+        self.current_filepath = ""
+        self._load_connected = False
+        self.scroll_timer = None
+
+        # Paths
+        base_dir = Path(__file__).parent.absolute()
+        self.pdfjs_root = base_dir / "ui" / "pdfjs_viewer"
+
+        # Install the custom scheme handler on the default profile
+        profile = QWebEngineProfile.defaultProfile()
+        self._scheme_handler = LocalFileSchemeHandler(self.pdfjs_root, self)
+        profile.installUrlSchemeHandler(QByteArray(SCHEME_NAME), self._scheme_handler)
+
+        # Allow local content and JS
+        settings = self.web_view.settings()
+        settings.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, True)
+        settings.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessFileUrls, True)
+        settings.setAttribute(QWebEngineSettings.WebAttribute.JavascriptEnabled, True)
+
+    # ── Dark Mode ─────────────────────────────────────────────
 
     def toggle_dark_mode(self, enabled: bool):
         self.dark_mode = enabled
-        self.render_current_page()
-        
+        self._apply_dark_mode_css()
+
     def set_theme_settings(self, theme: dict):
-        self.theme_settings = theme
-        self.render_current_page()
+        # Only brightness is relevant now — we handle it via CSS opacity
+        brightness = theme.get("brightness", 1.0)
+        js = f"document.getElementById('viewerContainer').style.opacity = {brightness};"
+        self.web_view.page().runJavaScript(js)
+
+    def _apply_dark_mode_css(self):
+        if self.dark_mode:
+            css = "html { filter: invert(90%) hue-rotate(180deg) !important; } img, canvas { filter: invert(100%) hue-rotate(180deg) !important; }"
+        else:
+            css = "html { filter: none !important; } img, canvas { filter: none !important; }"
+
+        js = f"""
+        (function() {{
+            var s = document.getElementById('darkpdf-theme');
+            if (!s) {{ s = document.createElement('style'); s.id = 'darkpdf-theme'; document.head.appendChild(s); }}
+            s.textContent = `{css}`;
+        }})();
+        """
+        self.web_view.page().runJavaScript(js)
+
+    # ── Document Loading ──────────────────────────────────────
 
     def open_document(self, filepath: str, initial_page: int = 0):
-        if self.renderer.load_document(filepath):
-            self._undo_stack.clear()
-            self.document_loaded.emit(self.renderer.get_page_count())
-            
-            if 0 <= initial_page < self.renderer.get_page_count():
-                self.current_page = initial_page
-            else:
-                self.current_page = 0
-            
-            self.render_current_page()
+        if not os.path.exists(filepath):
+            return
 
-    def render_current_page(self):
-        if self.renderer.doc:
-            pix = self.renderer.get_page_pixmap(self.current_page, self.zoom)
-            if pix:
-                bboxes = self.renderer.get_page_image_bboxes(self.current_page, self.zoom)
-                qimage = get_qimage(pix, self.dark_mode, bboxes, self.theme_settings)
-                self.page_rendered.emit(qimage)
-                
-                # Extract and scale links
-                page = self.renderer.doc.load_page(self.current_page)
-                links = []
-                for link in page.get_links():
-                    rect = link.get("from")
-                    if rect:
-                        scaled_rect = QRect(
-                            int(rect[0] * self.zoom),
-                            int(rect[1] * self.zoom),
-                            int((rect[2] - rect[0]) * self.zoom),
-                            int((rect[3] - rect[1]) * self.zoom)
-                        )
-                        link_data = {
-                            "rect": scaled_rect,
-                            "kind": link.get("kind"),
-                            "page": link.get("page"),
-                            "uri": link.get("uri")
-                        }
-                        links.append(link_data)
-                self.links_extracted.emit(links)
+        self.current_filepath = filepath
+        self.current_page = initial_page
+
+        # Stop any existing timer
+        if self.scroll_timer:
+            self.scroll_timer.stop()
+
+        # Build the custom-scheme URL for the PDF file
+        # On Windows, filepath is like C:\foo\bar.pdf → darkpdf://pdffile/C:/foo/bar.pdf
+        pdf_url = "darkpdf://pdffile/" + filepath.replace("\\", "/")
+
+        # Build the viewer URL
+        viewer_url = f"darkpdf://viewer/web/viewer.html?file={pdf_url}#page={initial_page + 1}"
+
+        # Connect loadFinished only once
+        if not self._load_connected:
+            self.web_view.loadFinished.connect(self._on_load_finished)
+            self._load_connected = True
+
+        self.web_view.load(QUrl(viewer_url))
+
+    def _on_load_finished(self, ok: bool):
+        if not ok:
+            return
+
+        # Apply dark mode CSS
+        self._apply_dark_mode_css()
+
+        # Hide PDF.js' own toolbar (we have our own controls)
+        js_hide = """
+        (function() {
+            var tb = document.getElementById('toolbarContainer');
+            if (tb) tb.style.display = 'none';
+            var vc = document.getElementById('viewerContainer');
+            if (vc) vc.style.top = '0px';
+        })();
+        """
+        self.web_view.page().runJavaScript(js_hide)
+
+        # Poll for page count (PDF.js may take a moment to parse)
+        QTimer.singleShot(800, self._query_page_count)
+
+        # Start page-scroll polling
+        if self.scroll_timer:
+            self.scroll_timer.stop()
+        self.scroll_timer = QTimer(self)
+        self.scroll_timer.timeout.connect(self._poll_current_page)
+        self.scroll_timer.start(500)
+
+    def _query_page_count(self):
+        js = "typeof PDFViewerApplication !== 'undefined' ? PDFViewerApplication.pagesCount : 0;"
+        self.web_view.page().runJavaScript(js, self._on_page_count)
+
+    def _on_page_count(self, count):
+        if count and int(count) > 0:
+            self.document_loaded.emit(int(count))
+        else:
+            # Retry after a short delay — PDF might still be loading
+            QTimer.singleShot(500, self._query_page_count)
+
+    # ── Page Polling ──────────────────────────────────────────
+
+    def _poll_current_page(self):
+        js = "typeof PDFViewerApplication !== 'undefined' ? PDFViewerApplication.page : 0;"
+        self.web_view.page().runJavaScript(js, self._on_page_polled)
+
+    def _on_page_polled(self, page_num):
+        if page_num:
+            idx = int(page_num) - 1
+            if idx != self.current_page:
+                self.current_page = idx
+                self.page_changed.emit(self.current_page)
+
+    # ── Navigation ────────────────────────────────────────────
 
     def next_page(self):
-        if self.current_page < self.renderer.get_page_count() - 1:
-            self.current_page += 1
-            self.render_current_page()
-
-    def set_zoom(self, new_zoom: float):
-        self.zoom = max(0.25, min(new_zoom, 5.0))  # clamp between 25% and 500%
-        self.render_current_page()
+        self.web_view.page().runJavaScript("PDFViewerApplication.page++;")
 
     def prev_page(self):
-        if self.current_page > 0:
-            self.current_page -= 1
-            self.render_current_page()
+        self.web_view.page().runJavaScript("PDFViewerApplication.page--;")
 
-    # ── Undo System ──────────────────────────────────────────────
+    def go_to_page(self, page_1indexed: int):
+        self.web_view.page().runJavaScript(f"PDFViewerApplication.page = {page_1indexed};")
 
-    def _snapshot_page_annots(self, page_index: int) -> bytes:
-        """Capture the raw PDF page content so we can restore it on undo.
-        We save the full document bytes — simple and reliable for undo."""
-        if not self.renderer.doc:
-            return None
-        page = self.renderer.doc.load_page(page_index)
-        # Collect all annotation xrefs and their raw data
-        annots_data = []
-        for annot in page.annots():
-            annots_data.append({
-                'xref': annot.xref,
-                'rect': tuple(annot.rect),
-                'type': annot.type,
-                'colors': annot.colors,
-                'opacity': annot.opacity,
-                'vertices': annot.vertices if annot.vertices else None,
-            })
-        return annots_data
+    # ── Zoom ──────────────────────────────────────────────────
 
-    def _push_undo(self, page_index: int):
-        """Push current page annotation state onto the undo stack."""
-        snapshot = self._snapshot_page_annots(page_index)
-        self._undo_stack.append((page_index, snapshot))
-        # Limit stack size
-        if len(self._undo_stack) > self.MAX_UNDO_STEPS:
-            self._undo_stack.pop(0)
-
-    def undo(self) -> bool:
-        """Undo the last annotation operation. Returns True if undo was performed."""
-        if not self._undo_stack or not self.renderer.doc:
-            return False
-
-        page_index, old_annots = self._undo_stack.pop()
-        page = self.renderer.doc.load_page(page_index)
-
-        # Remove all current annotations on the page
-        current_annots = list(page.annots())
-        for annot in current_annots:
-            page.delete_annot(annot)
-
-        # Restore old annotations
-        if old_annots:
-            for adata in old_annots:
-                rect = fitz.Rect(adata['rect'])
-                annot_type = adata['type']
-                
-                # We only deal with highlight annotations in this app
-                if annot_type[0] == fitz.PDF_ANNOT_HIGHLIGHT:
-                    if adata.get('vertices'):
-                        # Rebuild quads from vertices
-                        verts = adata['vertices']
-                        quads = []
-                        for i in range(0, len(verts), 4):
-                            if i + 3 < len(verts):
-                                quad = fitz.Quad(verts[i], verts[i+1], verts[i+2], verts[i+3])
-                                quads.append(quad)
-                        if quads:
-                            annot = page.add_highlight_annot(quads)
-                        else:
-                            annot = page.add_highlight_annot(rect)
-                    else:
-                        annot = page.add_highlight_annot(rect)
-                    
-                    # Restore visual properties
-                    colors = adata.get('colors', {})
-                    stroke = colors.get('stroke')
-                    if stroke:
-                        annot.set_colors(stroke=stroke)
-                    opacity = adata.get('opacity', 0.4)
-                    annot.set_opacity(opacity)
-                    annot.update()
-
-        self._safe_save_document()
-        
-        # Navigate to the affected page and re-render
-        self.current_page = page_index
-        self.render_current_page()
-        return True
-
-    # ── Document Save ────────────────────────────────────────────
-
-    def _safe_save_document(self):
-        """Attempts incremental save, falls back to full save + reopen if corrupted or repaired."""
-        if not self.renderer.doc:
-            return
-            
-        filepath = self.renderer.doc.name
-        try:
-            if not self.renderer.doc.is_repaired:
-                self.renderer.doc.saveIncr()
-                return
-        except Exception:
-            pass # Fallback to full save
-            
-        # Full save fallback
-        # 1. Save to a temporary file
-        fd, temp_path = tempfile.mkstemp(suffix=".pdf")
-        os.close(fd)
-        
-        try:
-            self.renderer.doc.save(temp_path)
-            
-            # 2. To overwrite the original file we must close it first
-            self.renderer.doc.close()
-            
-            # 3. Replace original with temp
-            shutil.move(temp_path, filepath)
-            
-            # 4. Reopen document transparently
-            self.renderer.load_document(filepath)
-        except Exception as e:
-            print(f"Critical error saving PDF: {e}")
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
-
-    # ── Annotation Operations ────────────────────────────────────
-
-    def add_highlight(self, rect: QRect):
-        if self.renderer.doc:
-            # Save undo state BEFORE making changes
-            self._push_undo(self.current_page)
-            
-            # Revert UI scale mapping to original Document scale
-            pdf_rect = fitz.Rect(
-                rect.left() / self.zoom,
-                rect.top() / self.zoom,
-                rect.right() / self.zoom,
-                rect.bottom() / self.zoom
-            )
-            page = self.renderer.doc.load_page(self.current_page)
-            
-            # Fetch words inside the box to highlight precisely
-            words = page.get_text("words", clip=pdf_rect)
-            if words:
-                quads = [fitz.Rect(w[:4]).quad for w in words]
-                annot = page.add_highlight_annot(quads)
-            else:
-                annot = page.add_highlight_annot(pdf_rect)
-                
-            # Set native color to light blue. In Dark Mode (inversion), this turns into a pleasant orange/yellow!
-            annot.set_colors(stroke=(0, 0.5, 1))
-            annot.set_opacity(0.4)
-            annot.update()
-            
-            self._safe_save_document()
-            self.render_current_page()
-
-    def erase_highlight(self, rect: QRect):
-        if self.renderer.doc:
-            # Save undo state BEFORE making changes
-            self._push_undo(self.current_page)
-            
-            pdf_rect = fitz.Rect(
-                rect.left() / self.zoom,
-                rect.top() / self.zoom,
-                rect.right() / self.zoom,
-                rect.bottom() / self.zoom
-            )
-            page = self.renderer.doc.load_page(self.current_page)
-            
-            # Delete any annotations intersecting the eraser box
-            for annot in page.annots():
-                if annot.rect.intersects(pdf_rect):
-                    page.delete_annot(annot)
-                    
-            self._safe_save_document()
-            self.render_current_page()
+    def set_zoom(self, new_zoom: float):
+        self.zoom = max(0.25, min(new_zoom, 5.0))
+        js = f"""
+        if (typeof PDFViewerApplication !== 'undefined' && PDFViewerApplication.pdfViewer) {{
+            PDFViewerApplication.pdfViewer.currentScaleValue = {self.zoom};
+        }}
+        """
+        self.web_view.page().runJavaScript(js)

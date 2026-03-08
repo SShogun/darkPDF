@@ -1,9 +1,9 @@
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QListWidget, QPushButton, QListWidgetItem
-from PySide6.QtCore import Qt, Signal
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel, QListWidget, QPushButton, QListWidgetItem
+from PyQt6.QtCore import Qt, pyqtSignal
 from pathlib import Path
 
 class HomeWidget(QWidget):
-    file_selected = Signal(str)
+    file_selected = pyqtSignal(str)
 
     def __init__(self, recent_files):
         super().__init__()

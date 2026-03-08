@@ -153,7 +153,7 @@ class TestViewerController:
         self.viewer.open_document(self.temp_pdf)
         
         # Page should start with 0 annotations
-        from PySide6.QtCore import QRect
+        from PyQt6.QtCore import QRect
         page = self.viewer.renderer.doc.load_page(0)
         initial_count = len(list(page.annots()))
         assert initial_count == 0
@@ -172,7 +172,7 @@ class TestViewerController:
     def test_undo_after_erase(self):
         """Erasing a highlight then undoing should restore the highlight."""
         self.viewer.open_document(self.temp_pdf)
-        from PySide6.QtCore import QRect
+        from PyQt6.QtCore import QRect
         
         # First add a highlight (creates an undo entry)
         self.viewer.add_highlight(QRect(50, 50, 200, 30))
@@ -193,7 +193,7 @@ class TestViewerController:
     def test_undo_stack_limit(self):
         """Undo stack should not exceed MAX_UNDO_STEPS."""
         self.viewer.open_document(self.temp_pdf)
-        from PySide6.QtCore import QRect
+        from PyQt6.QtCore import QRect
         
         for i in range(25):
             self.viewer.add_highlight(QRect(50, 50 + i, 200, 30))

@@ -2,6 +2,17 @@
 
 This document tracks all features, architectural changes, and bug fixes applied to DarkPDF.
 
+## [v2.0.0] - PDF.js Engine Migration (`pdfjs-engine` branch)
+- **BREAKING** Replaced the entire PyMuPDF image-rendering engine with an embedded Chromium browser running Mozilla PDF.js v4.
+- **BREAKING** Migrated from PySide6 to PyQt6 (+ PyQt6-WebEngine) for WebEngine compatibility on Python 3.13.
+- **Added** a custom `darkpdf://` URL scheme handler (`LocalFileSchemeHandler`) to bypass Chromium's `file://` CORS restrictions.
+- **Added** native text selection, hyperlink clicking, and searchability — all handled natively by PDF.js.
+- **Changed** Dark Mode to CSS filter injection (`invert(90%) hue-rotate(180deg)`) instead of NumPy pixel manipulation.
+- **Changed** Brightness control to CSS opacity instead of NumPy channel scaling.
+- **Removed** PyMuPDF dependency (`fitz`), `renderer.py`, `darkmode.py`, `image_utils.py`, `pdf_label.py`.
+- **Removed** Python-side highlight, eraser, and comment annotation tools (now handled natively by PDF.js).
+- **Removed** Minimap widget (incompatible with WebEngine architecture).
+
 ## [v1.5.0] - Stability, Testing, & Undo Mechanics
 - **Added** an internal 20-step Undo Stack! Pressing `Ctrl + Z` seamlessly restores previous annotation states (Highlights & Erases).
 - **Added** Interactive Clickable PDF Links! DarkPDF now supports Native PDF Hyperlinks (both internal page jumping and external URI browser opening). Cursor changes automatically when hovering over interactive text.
