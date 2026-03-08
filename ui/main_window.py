@@ -40,6 +40,8 @@ class MainWindow(QMainWindow):
         self.central_label.highlight_requested.connect(self._on_highlight_requested)
         self.central_label.comment_requested.connect(self._on_comment_requested)
         self.central_label.erase_requested.connect(self._on_erase_requested)
+        self.central_label.link_clicked.connect(self._on_link_clicked)
+        self.viewer.links_extracted.connect(self.central_label.set_links)
         self.scroll_area.setWidget(self.central_label)
         self.stacked.addWidget(self.scroll_area)
         
@@ -605,6 +607,23 @@ class MainWindow(QMainWindow):
                 cursor.movePosition(cursor.MoveOperation.End)
                 self.notes_edit.setTextCursor(cursor)
                 self.notes_edit.setFocus()
+
+    def _on_link_clicked(self, link: dict):
+        import fitz
+        from PySide6.QtGui import QDesktopServices
+        from PySide6.QtCore import QUrl
+        
+        kind = link.get("kind")
+        if kind == fitz.LINK_URI:
+            uri = link.get("uri")
+            if uri:
+                QDesktopServices.openUrl(QUrl(uri))
+        elif kind == fitz.LINK_GOTO:
+            page = link.get("page")
+            if page is not None and self.viewer.renderer.doc:
+                if 0 <= page < self.viewer.renderer.get_page_count():
+                    self.viewer.current_page = page
+                    self.viewer.render_current_page()
 
     def _on_page_input_entered(self):
         try:

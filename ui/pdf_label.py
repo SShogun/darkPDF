@@ -13,12 +13,19 @@ class PDFViewerLabel(QLabel):
     highlight_requested = Signal(QRect)
     comment_requested = Signal(QRect)
     erase_requested = Signal(QRect)
+    link_clicked = Signal(dict)
 
     def __init__(self):
         super().__init__()
         self.start_pos = None
         self.current_pos = None
         self.mode = InteractionMode.NORMAL
+        self.links = []
+        self.setMouseTracking(True)
+
+    def set_links(self, links):
+        self.links = links
+        self.update()
 
     def mousePressEvent(self, event):
         if self.mode == InteractionMode.NORMAL:
@@ -30,12 +37,31 @@ class PDFViewerLabel(QLabel):
             self.update()
 
     def mouseMoveEvent(self, event):
+        pos = event.position().toPoint()
+        
         if event.buttons() & Qt.MouseButton.LeftButton and self.start_pos:
-            self.current_pos = event.position().toPoint()
+            self.current_pos = pos
             self.update()
+        elif self.mode == InteractionMode.NORMAL:
+            # Check for link hover
+            is_hovering_link = any(link["rect"].contains(pos) for link in self.links)
+            if is_hovering_link:
+                self.setCursor(Qt.CursorShape.PointingHandCursor)
+            else:
+                self.setCursor(Qt.CursorShape.ArrowCursor)
 
     def mouseReleaseEvent(self, event):
         if self.mode == InteractionMode.NORMAL:
+            if event.button() == Qt.MouseButton.LeftButton and self.start_pos:
+                # Detect click without dragging
+                self.current_pos = event.position().toPoint()
+                dist = (self.current_pos - self.start_pos).manhattanLength()
+                if dist < 5:
+                    for link in self.links:
+                        if link["rect"].contains(self.current_pos):
+                            self.link_clicked.emit(link)
+                            break
+                self.start_pos = None
             return
             
         if event.button() == Qt.MouseButton.LeftButton and self.start_pos:

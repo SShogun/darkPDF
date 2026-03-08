@@ -35,6 +35,12 @@ def temp_pdf():
     for i in range(3):
         page = doc.new_page(width=612, height=792)  # US Letter
         page.insert_text((72, 72), f"Test Page {i + 1}", fontsize=24)
+        
+        # Add a dummy URI link to page 0
+        if i == 0:
+            rect = fitz.Rect(72, 72, 200, 100)
+            page.insert_link({"kind": fitz.LINK_URI, "from": rect, "uri": "https://example.com"})
+            
     doc.save(pdf_path)
     doc.close()
     

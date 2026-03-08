@@ -4,6 +4,7 @@ This document tracks all features, architectural changes, and bug fixes applied 
 
 ## [v1.5.0] - Stability, Testing, & Undo Mechanics
 - **Added** an internal 20-step Undo Stack! Pressing `Ctrl + Z` seamlessly restores previous annotation states (Highlights & Erases).
+- **Added** Interactive Clickable PDF Links! DarkPDF now supports Native PDF Hyperlinks (both internal page jumping and external URI browser opening). Cursor changes automatically when hovering over interactive text.
 - **Added** a comprehensive Automated Test Suite (53 Tests) using `pytest` covering the `ViewerController`, `UserDataManager`, `PDFRenderer`, and `MainWindow` GUI.
 - **Redesigned** the Toolbar UI into a sleek, labeled vertical dock mimicking modern IDE layouts for better readability without losing screen real-estate.
 - **Added** explicit global keyboard shortcuts, including `Ctrl+Z` (Undo), `Ctrl+N` (Toggle Notes), `Ctrl+E` (Eraser), `Ctrl+D` (Dark Mode), and `Ctrl+Home` (Home Screen).

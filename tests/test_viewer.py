@@ -200,6 +200,17 @@ class TestViewerController:
         
         assert len(self.viewer._undo_stack) <= ViewerController.MAX_UNDO_STEPS
 
+    # ── Links ──
+
+    def test_links_extracted(self):
+        """Viewer should extract links from the page if any exist."""
+        # For simplicity, we just test that the signal fires with a list
+        links_emitted = []
+        self.viewer.links_extracted.connect(lambda links: links_emitted.append(links))
+        self.viewer.open_document(self.temp_pdf)
+        assert len(links_emitted) > 0
+        assert isinstance(links_emitted[0], list)
+
     # ── Dark Mode ──
 
     def test_toggle_dark_mode(self):

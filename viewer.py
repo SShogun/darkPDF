@@ -13,6 +13,7 @@ class ViewerController(QObject):
     # Sends out QImage objects when a page is rendered
     page_rendered = Signal(QImage)
     document_loaded = Signal(int)
+    links_extracted = Signal(list)
 
     MAX_UNDO_STEPS = 20
 
@@ -52,6 +53,27 @@ class ViewerController(QObject):
                 bboxes = self.renderer.get_page_image_bboxes(self.current_page, self.zoom)
                 qimage = get_qimage(pix, self.dark_mode, bboxes, self.theme_settings)
                 self.page_rendered.emit(qimage)
+                
+                # Extract and scale links
+                page = self.renderer.doc.load_page(self.current_page)
+                links = []
+                for link in page.get_links():
+                    rect = link.get("from")
+                    if rect:
+                        scaled_rect = QRect(
+                            int(rect[0] * self.zoom),
+                            int(rect[1] * self.zoom),
+                            int((rect[2] - rect[0]) * self.zoom),
+                            int((rect[3] - rect[1]) * self.zoom)
+                        )
+                        link_data = {
+                            "rect": scaled_rect,
+                            "kind": link.get("kind"),
+                            "page": link.get("page"),
+                            "uri": link.get("uri")
+                        }
+                        links.append(link_data)
+                self.links_extracted.emit(links)
 
     def next_page(self):
         if self.current_page < self.renderer.get_page_count() - 1:
