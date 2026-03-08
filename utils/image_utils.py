@@ -3,7 +3,7 @@ import fitz
 import numpy as np
 from darkmode import apply_dark_mode
 
-def get_qimage(pix: fitz.Pixmap, dark_mode: bool = False) -> QImage:
+def get_qimage(pix: fitz.Pixmap, dark_mode: bool = False, bboxes: list = None, theme: dict = None) -> QImage:
     """Convert PyMuPDF pixmap to PySide6 QImage, applying dark mode if requested."""
     # Convert samples to writable numpy array
     img_array = np.frombuffer(pix.samples, dtype=np.uint8).copy()
@@ -13,7 +13,7 @@ def get_qimage(pix: fitz.Pixmap, dark_mode: bool = False) -> QImage:
     
     # Process through dark mode engine if enabled
     if dark_mode:
-        img_array = apply_dark_mode(img_array, has_alpha)
+        img_array = apply_dark_mode(img_array, has_alpha, bboxes, theme)
         
     # Determine format
     if has_alpha:

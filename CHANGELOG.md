@@ -1,0 +1,36 @@
+# Version History / Changelog
+
+This document tracks all features, architectural changes, and bug fixes applied to DarkPDF.
+
+## [v1.4.0] - UI Refinement & Interactive Tools
+- **Moved** Navigation sidebar and Minimap entirely to the Right Side of the window for better layout coherence next to the notes.
+- **Added** an Eraser mode logic! Users can now drag a box over existing annotations to remove them from the underlying PyMuPDF instance.
+- **Fixed** overlapping text rendering on the inner sidebar buttons (`< Prev`).
+- **Added** visual toggle to make the Minimap an optional, hideable UI element.
+- **Fixed** a file I/O bug where PyMuPDF `Coder=4` repaired files would crash the renderer upon trying to auto-save incrementally.
+- **Tweaked** Highlighting native colors so that they render as a brilliant, visible Orange when inverted in Dark Mode.
+
+## [v1.3.0] - Interactive Reading & Annotation Engine 
+- **Added** a multi-mode Interaction layer on the Document Viewer.
+- **Added** a physical Highlighter! Drawing bounding boxes dynamically maps to the PDF's text scale, searches for precise layout strings, and adds native highlight annotations to the open PDF.
+- **Added** an Interactive Comment extractor! Drawing bounding boxes over sentences now parses the document text directly underneath it, snaps open the Notes sidebar, and quotes the author so users can begin typing a note immediately.
+- **Added** the Toolbar Brightness Slider that feeds into the Numpy equation.
+- **Added** `Ctrl + Scroll` dynamic zooming mechanics.
+
+## [v1.2.0] - Smart Inversion & Persistent User Data
+- **Created** `UserDataManager` which handles saving and loading a `settings.json` file natively in the user's `~/.darkpdf` system folder.
+- **Added** a Clean Home Page Dashboard widget showing all `Recent Files`. 
+- **Added** reading progress tracking that automatically leaps users back to the page they last observed when unlocking a document.
+- **Added** a persistent cross-document Note-taking sidebar dock. Notes are saved per page and persist cleanly.
+- **Added** Image Bounding Box Extraction: Images and layout photos are no longer inverted into scary negative colors.
+- **Added** Scanned Page Heuristics: if an image comprises >80% of a page's size, DarkPDF recognizes it as a book scan and applies the inversion anyway.
+
+## [v1.1.0] - The Core Math & Dark Mode
+- **Created** the `apply_dark_mode` function utilizing rapid fire 8-bit unsigned integer math on numpy arrays.
+- **Hooked up** the internal PDF pixmap extraction directly to the inverse numpy arrays while preserving document alpha layers.
+- **Added** Basic zoom and page navigation actions and keyboard shortcuts.
+
+## [v1.0.0] - Initial Prototype Base
+- **Added** Base desktop window framing using `PySide6`.
+- **Added** internal `PDFRenderer` class leaning upon `PyMuPDF (fitz)` to open and hold `pdf` file streams in memory.
+- **Added** basic display of document matrix maps to UI labels.

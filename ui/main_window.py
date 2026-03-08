@@ -1,14 +1,19 @@
-from PySide6.QtWidgets import QMainWindow, QFileDialog, QLabel, QScrollArea, QToolBar
+from PySide6.QtWidgets import QMainWindow, QFileDialog, QLabel, QScrollArea, QToolBar, QSlider, QDockWidget, QTextEdit, QVBoxLayout, QWidget, QPushButton
 from PySide6.QtGui import QAction, QPixmap
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QEvent, QRect
 
 from viewer import ViewerController
+from ui.home_widget import HomeWidget
+from ui.pdf_label import PDFViewerLabel
+from ui.minimap import MinimapWidget
+from utils.user_data_manager import UserDataManager
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("DarkPDF")
         self.resize(800, 600)
+        self.user_data = UserDataManager()
 
         # Create viewer controller
         self.viewer = ViewerController()
@@ -20,14 +25,75 @@ class MainWindow(QMainWindow):
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setAlignment(Qt.AlignmentFlag.AlignCenter)
         
-        self.central_label = QLabel("Open a PDF to begin reading")
+        self.central_label = PDFViewerLabel()
         self.central_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.central_label.highlight_requested.connect(self._on_highlight_requested)
+        self.central_label.comment_requested.connect(self._on_comment_requested)
+        self.central_label.erase_requested.connect(self._on_erase_requested)
         self.scroll_area.setWidget(self.central_label)
         
-        self.setCentralWidget(self.scroll_area)
+        # Install event filter for zooming
+        self.scroll_area.installEventFilter(self)
+        self.scroll_area.viewport().installEventFilter(self)
+        
+        # Create Notes Dock Widget
+        self.notes_dock = QDockWidget("Page Notes", self)
+        self.notes_edit = QTextEdit()
+        self.notes_edit.setPlaceholderText("Write notes for this page here...")
+        self.notes_edit.setStyleSheet("font-size: 14px; padding: 5px;")
+        self.notes_edit.textChanged.connect(self._on_notes_changed)
+        self.notes_dock.setWidget(self.notes_edit)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.notes_dock)
+        self.notes_dock.hide()
+
+        # Create Navigation Sidebar Dock Widget
+        self.sidebar_dock = QDockWidget("Navigation", self)
+        self.sidebar_dock.setAllowedAreas(Qt.DockWidgetArea.RightDockWidgetArea)
+        self.sidebar_dock.setFeatures(QDockWidget.DockWidgetFeature.NoDockWidgetFeatures) # make it fixed
+        
+        sidebar_widget = QWidget()
+        sidebar_layout = QVBoxLayout(sidebar_widget)
+        sidebar_layout.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
+        
+        self.page_info_label = QLabel("Page: - / -")
+        self.page_info_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.page_info_label.setStyleSheet("font-size: 14px; font-weight: bold; margin-top: 10px; margin-bottom: 10px;")
+        
+        nav_prev_btn = QPushButton("▲ Prev", self)
+        nav_prev_btn.clicked.connect(self.viewer.prev_page)
+        
+        nav_next_btn = QPushButton("▼ Next", self)
+        nav_next_btn.clicked.connect(self.viewer.next_page)
+        
+        sidebar_layout.addWidget(self.page_info_label)
+        sidebar_layout.addWidget(nav_prev_btn)
+        sidebar_layout.addWidget(nav_next_btn)
+        
+        # Minimap container
+        sidebar_layout.addSpacing(10)
+        self.minimap_widget = MinimapWidget(self.viewer.renderer)
+        self.minimap_widget.page_selected.connect(self._on_minimap_page_selected)
+        sidebar_layout.addWidget(self.minimap_widget)
+        
+        self.sidebar_dock.setWidget(sidebar_widget)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.sidebar_dock)
+        self.sidebar_dock.hide()
+        
+        self._show_home()
 
         self._create_menu()
         self._create_toolbar()
+        
+        # Apply theme settings on load
+        theme = self.user_data.get_theme_settings()
+        if theme.get("dark_mode"):
+            self.viewer.toggle_dark_mode(True)
+            
+    def _show_home(self):
+        recent_files = self.user_data.get_recent_files()
+        self.home_widget = HomeWidget(recent_files)
+        self.home_widget.file_selected.connect(self.open_file)
+        self.setCentralWidget(self.home_widget)
 
     def _create_menu(self):
         menu_bar = self.menuBar()
@@ -44,10 +110,18 @@ class MainWindow(QMainWindow):
         view_menu = menu_bar.addMenu("View")
         
         # Dark Mode Toggle
-        dark_mode_action = QAction("Dark Mode", self)
-        dark_mode_action.setCheckable(True)
-        dark_mode_action.triggered.connect(self.viewer.toggle_dark_mode)
-        view_menu.addAction(dark_mode_action)
+        self.dark_mode_action_menu = QAction("Dark Mode", self)
+        self.dark_mode_action_menu.setCheckable(True)
+        self.dark_mode_action_menu.setChecked(self.user_data.get_theme_settings().get("dark_mode", False))
+        self.dark_mode_action_menu.triggered.connect(self._on_dark_mode_toggled)
+        view_menu.addAction(self.dark_mode_action_menu)
+        
+        # Minimap Toggle
+        self.minimap_action_menu = QAction("Minimap Options", self)
+        self.minimap_action_menu.setCheckable(True)
+        self.minimap_action_menu.setChecked(True)
+        self.minimap_action_menu.triggered.connect(self._toggle_minimap)
+        view_menu.addAction(self.minimap_action_menu)
         
         view_menu.addSeparator()
         
@@ -77,10 +151,11 @@ class MainWindow(QMainWindow):
         toolbar = QToolBar("Navigation", self)
         self.addToolBar(toolbar)
         
-        dark_mode_action = QAction("Dark Mode", self)
-        dark_mode_action.setCheckable(True)
-        dark_mode_action.triggered.connect(self.viewer.toggle_dark_mode)
-        toolbar.addAction(dark_mode_action)
+        self.dark_mode_action_toolbar = QAction("Dark Mode", self)
+        self.dark_mode_action_toolbar.setCheckable(True)
+        self.dark_mode_action_toolbar.setChecked(self.user_data.get_theme_settings().get("dark_mode", False))
+        self.dark_mode_action_toolbar.triggered.connect(self._on_dark_mode_toggled)
+        toolbar.addAction(self.dark_mode_action_toolbar)
         
         toolbar.addSeparator()
         
@@ -101,6 +176,38 @@ class MainWindow(QMainWindow):
         zoom_in_action = QAction("Zoom In", self)
         zoom_in_action.triggered.connect(self.zoom_in)
         toolbar.addAction(zoom_in_action)
+        
+        toolbar.addSeparator()
+        
+        # Highlighter Mode Toggle
+        self.highlight_action = QAction("Highlighter", self)
+        self.highlight_action.setCheckable(True)
+        self.highlight_action.setShortcut("Ctrl+H")
+        self.highlight_action.triggered.connect(self._toggle_highlight_mode)
+        toolbar.addAction(self.highlight_action)
+        
+        # Comment Mode Toggle
+        self.comment_action = QAction("Comment", self)
+        self.comment_action.setCheckable(True)
+        self.comment_action.triggered.connect(self._toggle_comment_mode)
+        toolbar.addAction(self.comment_action)
+        
+        # Eraser Mode Toggle
+        self.eraser_action = QAction("Eraser", self)
+        self.eraser_action.setCheckable(True)
+        self.eraser_action.triggered.connect(self._toggle_eraser_mode)
+        toolbar.addAction(self.eraser_action)
+        
+        toolbar.addSeparator()
+        
+        # Brightness Slider
+        toolbar.addWidget(QLabel(" Brightness: "))
+        self.brightness_slider = QSlider(Qt.Orientation.Horizontal)
+        self.brightness_slider.setRange(20, 100) # 0.2 to 1.0
+        self.brightness_slider.setValue(int(self.user_data.get_theme_settings().get("brightness", 1.0) * 100))
+        self.brightness_slider.setFixedWidth(100)
+        self.brightness_slider.valueChanged.connect(self._on_brightness_changed)
+        toolbar.addWidget(self.brightness_slider)
 
     def zoom_in(self):
         self.viewer.set_zoom(self.viewer.zoom * 1.2)
@@ -108,21 +215,171 @@ class MainWindow(QMainWindow):
     def zoom_out(self):
         self.viewer.set_zoom(self.viewer.zoom / 1.2)
 
-    def open_file(self):
-        filepath, _ = QFileDialog.getOpenFileName(
-             self,
-             "Open PDF",
-             "",
-             "PDF Files (*.pdf)"
-        )
+    def _on_brightness_changed(self, value):
+        brightness = value / 100.0
+        self.user_data.set_theme_setting("brightness", brightness)
+        # Update viewer theme without turning off dark mode
+        theme = self.user_data.get_theme_settings()
+        self.viewer.set_theme_settings(theme)
+
+    def eventFilter(self, source, event):
+        if event.type() == QEvent.Type.Wheel and event.modifiers() == Qt.KeyboardModifier.ControlModifier:
+            delta = event.angleDelta().y()
+            if delta > 0:
+                self.zoom_in()
+            elif delta < 0:
+                self.zoom_out()
+            return True
+        return super().eventFilter(source, event)
+
+    def _on_dark_mode_toggled(self, checked):
+        self.viewer.toggle_dark_mode(checked)
+        self.user_data.set_theme_setting("dark_mode", checked)
+        self.dark_mode_action_menu.setChecked(checked)
+        self.dark_mode_action_toolbar.setChecked(checked)
+
+    def _toggle_highlight_mode(self, checked):
+        from ui.pdf_label import InteractionMode
+        if checked:
+            self.central_label.mode = InteractionMode.HIGHLIGHT
+            self.central_label.setCursor(Qt.CursorShape.CrossCursor)
+            self.comment_action.setChecked(False)
+            self.eraser_action.setChecked(False)
+        else:
+            self.central_label.mode = InteractionMode.NORMAL
+            self.central_label.setCursor(Qt.CursorShape.ArrowCursor)
+
+    def _toggle_comment_mode(self, checked):
+        from ui.pdf_label import InteractionMode
+        if checked:
+            self.central_label.mode = InteractionMode.COMMENT
+            self.central_label.setCursor(Qt.CursorShape.IBeamCursor)
+            self.highlight_action.setChecked(False)
+            self.eraser_action.setChecked(False)
+        else:
+            self.central_label.mode = InteractionMode.NORMAL
+            self.central_label.setCursor(Qt.CursorShape.ArrowCursor)
+
+    def _toggle_eraser_mode(self, checked):
+        from ui.pdf_label import InteractionMode
+        if checked:
+            self.central_label.mode = InteractionMode.ERASER
+            self.central_label.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.highlight_action.setChecked(False)
+            self.comment_action.setChecked(False)
+        else:
+            self.central_label.mode = InteractionMode.NORMAL
+            self.central_label.setCursor(Qt.CursorShape.ArrowCursor)
+
+    def _toggle_minimap(self, checked):
+        self.minimap_widget.setVisible(checked)
+
+    def open_file(self, filepath=None):
+        if not filepath:
+            filepath, _ = QFileDialog.getOpenFileName(
+                 self,
+                 "Open PDF",
+                 "",
+                 "PDF Files (*.pdf)"
+            )
         if filepath:
             print(f"Opening file: {filepath}")
+            self.user_data.add_recent_file(filepath)
+            
+            # Switch back to scroll area viewer
+            self.setCentralWidget(self.scroll_area)
+            self.notes_dock.show()
+            self.sidebar_dock.show()
             self.viewer.open_document(filepath)
+            
+            # Restore page progress
+            last_page = self.user_data.get_last_read_page(filepath)
+            if 0 < last_page < self.viewer.renderer.get_page_count():
+                self.viewer.current_page = last_page
+                self.viewer.render_current_page()
             
     def document_loaded(self, page_count: int):
         self.setWindowTitle(f"DarkPDF - {page_count} pages")
+        
+        # Load Minimap
+        theme = self.user_data.get_theme_settings()
+        is_dark = theme.get("dark_mode", False)
+        
+        # Helper lambda to pass bboxes fetching safely
+        bbox_func = lambda idx, z: self.viewer.renderer.get_page_image_bboxes(idx, z)
+        self.minimap_widget.load_minimap(is_dark, bbox_func, theme)
+        self.minimap_widget.select_page(self.viewer.current_page)
 
     def display_page(self, qimage):
         qpixmap = QPixmap.fromImage(qimage)
         self.central_label.setPixmap(qpixmap)
         self.central_label.resize(qpixmap.size())
+        
+        # Update left sidebar info
+        if self.viewer.renderer.doc:
+            current = self.viewer.current_page + 1
+            total = self.viewer.renderer.get_page_count()
+            self.page_info_label.setText(f"Page\n{current} / {total}")
+            self.minimap_widget.select_page(self.viewer.current_page)
+        
+        # Save reading progress and load notes
+        if self.viewer.renderer.doc:
+            doc_path = self.viewer.renderer.doc.name
+            self.user_data.set_last_read_page(doc_path, self.viewer.current_page)
+            
+            note_text = self.user_data.get_note(doc_path, self.viewer.current_page)
+            # update UI without triggering save
+            self.notes_edit.blockSignals(True)
+            self.notes_edit.setPlainText(note_text)
+            self.notes_edit.blockSignals(False)
+
+    def _on_notes_changed(self):
+        if self.viewer.renderer.doc:
+            doc_path = self.viewer.renderer.doc.name
+            note_text = self.notes_edit.toPlainText()
+            self.user_data.set_note(doc_path, self.viewer.current_page, note_text)
+
+    def _on_highlight_requested(self, rect: QRect):
+        if self.viewer.renderer.doc:
+            self.viewer.add_highlight(rect)
+            
+    def _on_erase_requested(self, rect: QRect):
+        if self.viewer.renderer.doc:
+            self.viewer.erase_highlight(rect)
+            
+    def _on_comment_requested(self, rect: QRect):
+        if self.viewer.renderer.doc:
+            # Revert UI scale mapping to get the underlying PDF text
+            import fitz
+            pdf_rect = fitz.Rect(
+                rect.left() / self.viewer.zoom,
+                rect.top() / self.viewer.zoom,
+                rect.right() / self.viewer.zoom,
+                rect.bottom() / self.viewer.zoom
+            )
+            page = self.viewer.renderer.doc.load_page(self.viewer.current_page)
+            words = page.get_text("text", clip=pdf_rect)
+            
+            # Show the dock if it's hidden and prompt the user to comment on the text
+            self.notes_dock.show()
+            current_note = self.notes_edit.toPlainText()
+            separator = "\n\n" if current_note else ""
+            
+            extracted = words.strip().replace('\n', ' ')
+            if extracted:
+                injection = f"{separator}> \"{extracted}\"\n- "
+                
+                self.notes_edit.blockSignals(True)
+                self.notes_edit.setPlainText(current_note + injection)
+                self.notes_edit.blockSignals(False)
+                
+                # Move cursor to end
+                cursor = self.notes_edit.textCursor()
+                cursor.movePosition(cursor.MoveOperation.End)
+                self.notes_edit.setTextCursor(cursor)
+                self.notes_edit.setFocus()
+
+    def _on_minimap_page_selected(self, page_index: int):
+        if self.viewer.renderer.doc and 0 <= page_index < self.viewer.renderer.get_page_count():
+            self.viewer.current_page = page_index
+            self.viewer.render_current_page()
