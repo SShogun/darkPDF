@@ -21,7 +21,8 @@ Built directly upon `NumPy` array math and 8-bit unsigned transformations, DarkP
 ### 📚 Robust Annotations & Persistent State
 Read and review documents how you actually want to:
 - **Smart Highlighter:** Drag a box over any text, and DarkPDF parses the textual bounds to inject a lightweight transparent annotation directly into the PDF. Native highlight colors are perfectly inverted to a smooth orange when you are in Dark Mode.
-- **Eraser Mode:** Made a mistake? Quickly scrub it away with the native Eraser interactions.
+    - **Eraser Mode:** Made a mistake? Quickly scrub it away with the native Eraser interactions.
+- **Undo Stack:** Hit `Ctrl + Z` to instantly revert any highlighting or erasing mistakes up to 20 steps back.
 - **Intelligent Comment Quoter:** Notice something interesting? Select the text on the page using Comment Mode, and DarkPDF immediately extracts the underlying document text, opens your floating Notes dock, and creates a formatted quote for you to respond to. 
 
 ### 🧭 Unrivaled Navigation
@@ -59,10 +60,15 @@ DarkPDF pairs the rendering accuracy of modern libraries with the UI flexibility
 
 3. **Install Dependencies:**
    ```bash
-   pip install PySide6 PyMuPDF numpy
+   pip install PySide6 PyMuPDF numpy pytest
    ```
 
-4. **Launch DarkPDF!**
+4. **Run Tests (Optional):**
+   ```bash
+   python -m pytest tests/ -v
+   ```
+
+5. **Launch DarkPDF!**
    ```bash
    python main.py
    ```
@@ -73,8 +79,13 @@ DarkPDF pairs the rendering accuracy of modern libraries with the UI flexibility
 
 | Action | Shortcut |
 |--------|----------|
-| Open File | `Ctrl + O` |
+    | Open File | `Ctrl + O` |
 | Highlighter Tool | `Ctrl + H` |
+| Eraser Tool | `Ctrl + E` |
+| Undo Last Action | `Ctrl + Z` |
+| Toggle Dark Mode | `Ctrl + D` |
+| Toggle Notes | `Ctrl + N` |
+| Home Dashboard | `Ctrl + Home` |
 | Zoom In | `Ctrl + =` |
 | Zoom Out | `Ctrl + -` |
 | Fast Zoom | `Ctrl + Scroll Wheel` |

@@ -1,5 +1,7 @@
-from PySide6.QtWidgets import QMainWindow, QFileDialog, QLabel, QScrollArea, QToolBar, QSlider, QDockWidget, QTextEdit, QVBoxLayout, QWidget, QPushButton, QHBoxLayout, QLineEdit
-from PySide6.QtGui import QAction, QPixmap
+from PySide6.QtWidgets import (QMainWindow, QFileDialog, QLabel, QScrollArea, QToolBar, 
+    QSlider, QDockWidget, QTextEdit, QVBoxLayout, QWidget, QPushButton, QHBoxLayout, 
+    QLineEdit, QStackedWidget)
+from PySide6.QtGui import QAction, QPixmap, QShortcut, QKeySequence
 from PySide6.QtCore import Qt, QEvent, QRect
 
 from viewer import ViewerController
@@ -20,7 +22,15 @@ class MainWindow(QMainWindow):
         self.viewer.page_rendered.connect(self.display_page)
         self.viewer.document_loaded.connect(self.document_loaded)
 
-        # Create central layout with scroll area
+        # ── Central Stacked Widget (prevents widget destruction on view switch) ──
+        self.stacked = QStackedWidget(self)
+        self.setCentralWidget(self.stacked)
+        
+        # Page 0: Home Widget (placeholder — rebuilt each time)
+        self._home_placeholder = QWidget()
+        self.stacked.addWidget(self._home_placeholder)
+        
+        # Page 1: PDF Viewer (scroll area + label)
         self.scroll_area = QScrollArea(self)
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -31,12 +41,13 @@ class MainWindow(QMainWindow):
         self.central_label.comment_requested.connect(self._on_comment_requested)
         self.central_label.erase_requested.connect(self._on_erase_requested)
         self.scroll_area.setWidget(self.central_label)
+        self.stacked.addWidget(self.scroll_area)
         
-        # Install event filter for zooming
+        # Install event filter for Ctrl+scroll zooming
         self.scroll_area.installEventFilter(self)
         self.scroll_area.viewport().installEventFilter(self)
         
-        # Create Notes Dock Widget
+        # Create Notes Dock Widget (hidden by default, toggled via toolbar)
         self.notes_dock = QDockWidget("Page Notes", self)
         self.notes_edit = QTextEdit()
         self.notes_edit.setPlaceholderText("Write notes for this page here...")
@@ -49,7 +60,7 @@ class MainWindow(QMainWindow):
         # Create Navigation Sidebar Dock Widget
         self.sidebar_dock = QDockWidget("Navigation", self)
         self.sidebar_dock.setAllowedAreas(Qt.DockWidgetArea.RightDockWidgetArea)
-        self.sidebar_dock.setFeatures(QDockWidget.DockWidgetFeature.NoDockWidgetFeatures) # make it fixed
+        self.sidebar_dock.setFeatures(QDockWidget.DockWidgetFeature.NoDockWidgetFeatures)
         
         sidebar_widget = QWidget()
         sidebar_layout = QVBoxLayout(sidebar_widget)
@@ -94,6 +105,7 @@ class MainWindow(QMainWindow):
 
         self._create_menu()
         self._create_floating_tools()
+        self._create_keyboard_shortcuts()
         
         # Apply theme settings on load
         theme = self.user_data.get_theme_settings()
@@ -103,7 +115,6 @@ class MainWindow(QMainWindow):
             self.dark_mode_btn.setChecked(True)
             
     def _apply_global_style(self):
-        # A sleek, programmer-focused retro dark mode
         self.setStyleSheet("""
             QMainWindow {
                 background-color: #1e1e1e;
@@ -144,13 +155,51 @@ class MainWindow(QMainWindow):
             QMenuBar::item:selected { background-color: #444444; }
             QMenu { background-color: #252526; color: #d4d4d4; border: 1px solid #444; }
             QMenu::item:selected { background-color: #062f4a; }
+            QSlider::groove:horizontal {
+                height: 6px;
+                background: #3c3c3c;
+                border-radius: 3px;
+            }
+            QSlider::handle:horizontal {
+                background: #007acc;
+                width: 14px;
+                margin: -4px 0;
+                border-radius: 7px;
+            }
+            QSlider::groove:vertical {
+                width: 6px;
+                background: #3c3c3c;
+                border-radius: 3px;
+            }
+            QSlider::handle:vertical {
+                background: #007acc;
+                height: 14px;
+                margin: 0 -4px;
+                border-radius: 7px;
+            }
         """)
             
     def _show_home(self):
+        """Switch to the home view."""
         recent_files = self.user_data.get_recent_files()
         self.home_widget = HomeWidget(recent_files)
         self.home_widget.file_selected.connect(self.open_file)
-        self.setCentralWidget(self.home_widget)
+        
+        # Replace page 0 in stacked widget
+        old = self.stacked.widget(0)
+        self.stacked.removeWidget(old)
+        old.deleteLater()
+        self.stacked.insertWidget(0, self.home_widget)
+        self.stacked.setCurrentIndex(0)
+
+    def _go_home(self):
+        """Return to the home page, hiding PDF-related panels."""
+        self.sidebar_dock.hide()
+        self.notes_dock.hide()
+        if hasattr(self, 'notes_btn'):
+            self.notes_btn.setChecked(False)
+        self.setWindowTitle("DarkPDF")
+        self._show_home()
 
     def _create_menu(self):
         menu_bar = self.menuBar()
@@ -162,6 +211,10 @@ class MainWindow(QMainWindow):
         open_action.setShortcut("Ctrl+O")
         open_action.triggered.connect(self.open_file)
         file_menu.addAction(open_action)
+        
+        home_action = QAction("Home", self)
+        home_action.triggered.connect(self._go_home)
+        file_menu.addAction(home_action)
         
         # View Menu
         view_menu = menu_bar.addMenu("View")
@@ -204,8 +257,34 @@ class MainWindow(QMainWindow):
         zoom_out_action.triggered.connect(self.zoom_out)
         view_menu.addAction(zoom_out_action)
 
+    def _create_keyboard_shortcuts(self):
+        """Register global keyboard shortcuts on the main window."""
+        # Ctrl+H — Toggle Highlighter
+        shortcut_highlight = QShortcut(QKeySequence("Ctrl+H"), self)
+        shortcut_highlight.activated.connect(self._toggle_highlight_mode)
+        
+        # Ctrl+D — Toggle Dark Mode
+        shortcut_dark = QShortcut(QKeySequence("Ctrl+D"), self)
+        shortcut_dark.activated.connect(lambda: self._on_dark_mode_toggled(not self.dark_mode_btn.isChecked()))
+        
+        # Ctrl+N — Toggle Notes Panel
+        shortcut_notes = QShortcut(QKeySequence("Ctrl+N"), self)
+        shortcut_notes.activated.connect(self._toggle_notes)
+        
+        # Ctrl+E — Toggle Eraser
+        shortcut_eraser = QShortcut(QKeySequence("Ctrl+E"), self)
+        shortcut_eraser.activated.connect(lambda: self._toggle_eraser_mode(not self.eraser_btn.isChecked()))
+        
+        # Ctrl+Home — Go to Home
+        shortcut_home = QShortcut(QKeySequence("Ctrl+Home"), self)
+        shortcut_home.activated.connect(self._go_home)
+        
+        # Ctrl+Z — Undo
+        shortcut_undo = QShortcut(QKeySequence("Ctrl+Z"), self)
+        shortcut_undo.activated.connect(self._on_undo)
+
     def _create_floating_tools(self):
-        # We replace the bulky QToolBar with a sleek Tools frame that stays out of the way
+        # Sleek left-side toolbar
         self.tools_dock = QDockWidget("", self)
         self.tools_dock.setAllowedAreas(Qt.DockWidgetArea.LeftDockWidgetArea)
         self.tools_dock.setFeatures(QDockWidget.DockWidgetFeature.NoDockWidgetFeatures)
@@ -214,61 +293,130 @@ class MainWindow(QMainWindow):
         tools_widget = QWidget()
         layout = QVBoxLayout(tools_widget)
         layout.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
-        layout.setContentsMargins(5, 20, 5, 20)
+        layout.setContentsMargins(5, 15, 5, 15)
+        layout.setSpacing(4)
         
-        # Icons via unicode or single characters for minimalism
-        self.dark_mode_btn = QPushButton("🌙")
-        self.dark_mode_btn.setToolTip("Toggle Dark Mode")
-        self.dark_mode_btn.setCheckable(True)
+        # Helper to create labeled tool buttons
+        def make_tool_btn(icon_text, label_text, tooltip, checkable=False):
+            btn = QPushButton(f"{icon_text}  {label_text}")
+            btn.setToolTip(tooltip)
+            btn.setCheckable(checkable)
+            btn.setMinimumWidth(110)
+            btn.setStyleSheet("text-align: left; padding: 6px 8px;")
+            return btn
+        
+        # Home button at the very top
+        self.home_btn = make_tool_btn("🏠", "Home", "Go to Home Page (Ctrl+Home)")
+        self.home_btn.clicked.connect(self._go_home)
+        layout.addWidget(self.home_btn)
+        
+        layout.addSpacing(10)
+        
+        # Dark mode toggle
+        self.dark_mode_btn = make_tool_btn("🌙", "Dark", "Toggle Dark Mode (Ctrl+D)", checkable=True)
         self.dark_mode_btn.setChecked(self.user_data.get_theme_settings().get("dark_mode", False))
         self.dark_mode_btn.clicked.connect(self._on_dark_mode_toggled)
-        
-        # Tools
-        self.highlight_btn = QPushButton("🖍️")
-        self.highlight_btn.setToolTip("Highlighter (Ctrl+H)")
-        self.highlight_btn.setCheckable(True)
-        self.highlight_btn.clicked.connect(self._toggle_highlight_mode)
-        
-        self.comment_btn = QPushButton("💬")
-        self.comment_btn.setToolTip("Comment Selection")
-        self.comment_btn.setCheckable(True)
-        self.comment_btn.clicked.connect(self._toggle_comment_mode)
-        
-        self.eraser_btn = QPushButton("🧽")
-        self.eraser_btn.setToolTip("Eraser")
-        self.eraser_btn.setCheckable(True)
-        self.eraser_btn.clicked.connect(self._toggle_eraser_mode)
-        
-        # Layout addition
         layout.addWidget(self.dark_mode_btn)
-        layout.addSpacing(15)
+        
+        layout.addSpacing(10)
+        
+        # --- Annotation Tools ---
+        tools_label = QLabel("─── Tools ───")
+        tools_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        tools_label.setStyleSheet("color: #666; font-size: 11px;")
+        layout.addWidget(tools_label)
+        
+        self.highlight_btn = make_tool_btn("🖍️", "Highlight", "Highlighter (Ctrl+H)", checkable=True)
+        self.highlight_btn.clicked.connect(self._toggle_highlight_mode)
         layout.addWidget(self.highlight_btn)
+        
+        self.comment_btn = make_tool_btn("💬", "Comment", "Comment Selection", checkable=True)
+        self.comment_btn.clicked.connect(self._toggle_comment_mode)
         layout.addWidget(self.comment_btn)
+        
+        self.eraser_btn = make_tool_btn("🧽", "Eraser", "Eraser (Ctrl+E)", checkable=True)
+        self.eraser_btn.clicked.connect(self._toggle_eraser_mode)
         layout.addWidget(self.eraser_btn)
         
-        # Brightness slider kept minimal at bottom
+        # Notes toggle button
+        self.notes_btn = make_tool_btn("📝", "Notes", "Toggle Notes Panel (Ctrl+N)", checkable=True)
+        self.notes_btn.clicked.connect(self._toggle_notes)
+        layout.addWidget(self.notes_btn)
+        
+        # Undo button
+        self.undo_btn = make_tool_btn("↩️", "Undo", "Undo Last Action (Ctrl+Z)")
+        self.undo_btn.clicked.connect(self._on_undo)
+        layout.addWidget(self.undo_btn)
+        
+        # --- Zoom Section ---
         layout.addStretch()
-        layout.addWidget(QLabel("🔆"))
-        self.brightness_slider = QSlider(Qt.Orientation.Vertical)
+        
+        zoom_label = QLabel("─── Zoom ───")
+        zoom_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        zoom_label.setStyleSheet("color: #666; font-size: 11px;")
+        layout.addWidget(zoom_label)
+        
+        self.zoom_value_label = QLabel("100%")
+        self.zoom_value_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.zoom_value_label.setStyleSheet("font-size: 13px; font-weight: bold; color: #007acc;")
+        layout.addWidget(self.zoom_value_label)
+        
+        self.zoom_slider = QSlider(Qt.Orientation.Horizontal)
+        self.zoom_slider.setRange(25, 300)  # 25% to 300%
+        self.zoom_slider.setValue(100)
+        self.zoom_slider.setFixedWidth(110)
+        self.zoom_slider.setToolTip("Zoom Level (Ctrl+= / Ctrl+-)")
+        self.zoom_slider.valueChanged.connect(self._on_zoom_slider_changed)
+        layout.addWidget(self.zoom_slider, alignment=Qt.AlignmentFlag.AlignHCenter)
+        
+        # --- Brightness Section ---
+        layout.addSpacing(10)
+        
+        bright_label = QLabel("── Brightness ──")
+        bright_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        bright_label.setStyleSheet("color: #666; font-size: 11px;")
+        layout.addWidget(bright_label)
+        
+        self.brightness_slider = QSlider(Qt.Orientation.Horizontal)
         self.brightness_slider.setRange(20, 100) # 0.2 to 1.0
         self.brightness_slider.setValue(int(self.user_data.get_theme_settings().get("brightness", 1.0) * 100))
-        self.brightness_slider.setFixedHeight(100)
+        self.brightness_slider.setFixedWidth(110)
+        self.brightness_slider.setToolTip("Brightness")
         self.brightness_slider.valueChanged.connect(self._on_brightness_changed)
         layout.addWidget(self.brightness_slider, alignment=Qt.AlignmentFlag.AlignHCenter)
         
         self.tools_dock.setWidget(tools_widget)
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.tools_dock)
 
+    # ── Zoom ─────────────────────────────────────────────────────
+
     def zoom_in(self):
-        self.viewer.set_zoom(self.viewer.zoom * 1.2)
+        new_zoom = self.viewer.zoom * 1.2
+        self.viewer.set_zoom(new_zoom)
+        self._sync_zoom_slider()
 
     def zoom_out(self):
-        self.viewer.set_zoom(self.viewer.zoom / 1.2)
+        new_zoom = self.viewer.zoom / 1.2
+        self.viewer.set_zoom(new_zoom)
+        self._sync_zoom_slider()
+
+    def _sync_zoom_slider(self):
+        """Sync the zoom slider and label to match the viewer's current zoom."""
+        percent = int(self.viewer.zoom * 100)
+        self.zoom_slider.blockSignals(True)
+        self.zoom_slider.setValue(max(25, min(300, percent)))
+        self.zoom_slider.blockSignals(False)
+        self.zoom_value_label.setText(f"{percent}%")
+
+    def _on_zoom_slider_changed(self, value):
+        """Handle user dragging the zoom slider."""
+        new_zoom = value / 100.0
+        self.viewer.set_zoom(new_zoom)
+        self.zoom_value_label.setText(f"{value}%")
 
     def _on_brightness_changed(self, value):
         brightness = value / 100.0
         self.user_data.set_theme_setting("brightness", brightness)
-        # Update viewer theme without turning off dark mode
         theme = self.user_data.get_theme_settings()
         self.viewer.set_theme_settings(theme)
 
@@ -282,6 +430,13 @@ class MainWindow(QMainWindow):
             return True
         return super().eventFilter(source, event)
 
+    # ── Undo ─────────────────────────────────────────────────────
+
+    def _on_undo(self):
+        self.viewer.undo()
+
+    # ── Mode Toggles ─────────────────────────────────────────────
+
     def _on_dark_mode_toggled(self, checked):
         self.viewer.toggle_dark_mode(checked)
         self.user_data.set_theme_setting("dark_mode", checked)
@@ -291,10 +446,9 @@ class MainWindow(QMainWindow):
 
     def _toggle_highlight_mode(self, checked=None):
         from ui.pdf_label import InteractionMode
-        # Handle call from QAction shortcut
         if checked is None:
             checked = not self.highlight_btn.isChecked()
-            self.highlight_btn.setChecked(checked)
+        self.highlight_btn.setChecked(checked)
             
         if checked:
             self.central_label.mode = InteractionMode.HIGHLIGHT
@@ -316,8 +470,11 @@ class MainWindow(QMainWindow):
             self.central_label.mode = InteractionMode.NORMAL
             self.central_label.setCursor(Qt.CursorShape.ArrowCursor)
 
-    def _toggle_eraser_mode(self, checked):
+    def _toggle_eraser_mode(self, checked=None):
         from ui.pdf_label import InteractionMode
+        if checked is None:
+            checked = not self.eraser_btn.isChecked()
+        self.eraser_btn.setChecked(checked)
         if checked:
             self.central_label.mode = InteractionMode.ERASER
             self.central_label.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -327,8 +484,18 @@ class MainWindow(QMainWindow):
             self.central_label.mode = InteractionMode.NORMAL
             self.central_label.setCursor(Qt.CursorShape.ArrowCursor)
 
+    def _toggle_notes(self, checked=None):
+        """Toggle the notes dock panel visibility."""
+        if checked is None:
+            checked = not self.notes_dock.isVisible()
+        self.notes_dock.setVisible(checked)
+        if hasattr(self, 'notes_btn'):
+            self.notes_btn.setChecked(checked)
+
     def _toggle_minimap(self, checked):
         self.minimap_widget.setVisible(checked)
+
+    # ── File Operations ──────────────────────────────────────────
 
     def open_file(self, filepath=None):
         if not filepath:
@@ -340,19 +507,16 @@ class MainWindow(QMainWindow):
             )
         if filepath:
             print(f"Opening file: {filepath}")
+            
+            # Restore page progress BEFORE opening so it isn't overwritten
+            last_page = self.user_data.get_last_read_page(filepath)
+            
             self.user_data.add_recent_file(filepath)
             
-            # Switch back to scroll area viewer
-            self.setCentralWidget(self.scroll_area)
-            self.notes_dock.show()
+            # Switch to PDF viewer (page 1 of stacked widget)
+            self.stacked.setCurrentIndex(1)
             self.sidebar_dock.show()
-            self.viewer.open_document(filepath)
-            
-            # Restore page progress
-            last_page = self.user_data.get_last_read_page(filepath)
-            if 0 < last_page < self.viewer.renderer.get_page_count():
-                self.viewer.current_page = last_page
-                self.viewer.render_current_page()
+            self.viewer.open_document(filepath, initial_page=last_page)
             
     def document_loaded(self, page_count: int):
         self.setWindowTitle(f"DarkPDF - {page_count} pages")
@@ -361,7 +525,6 @@ class MainWindow(QMainWindow):
         theme = self.user_data.get_theme_settings()
         is_dark = theme.get("dark_mode", False)
         
-        # Helper lambda to pass bboxes fetching safely
         bbox_func = lambda idx, z: self.viewer.renderer.get_page_image_bboxes(idx, z)
         self.minimap_widget.load_minimap(is_dark, bbox_func, theme)
         self.minimap_widget.select_page(self.viewer.current_page)
@@ -371,12 +534,11 @@ class MainWindow(QMainWindow):
         self.central_label.setPixmap(qpixmap)
         self.central_label.resize(qpixmap.size())
         
-        # Update left sidebar info
+        # Update sidebar info
         if self.viewer.renderer.doc:
             current = self.viewer.current_page + 1
             total = self.viewer.renderer.get_page_count()
             
-            # Update quietly without triggering textChanged / entered events
             self.page_input.blockSignals(True)
             self.page_input.setText(str(current))
             self.page_input.blockSignals(False)
@@ -384,16 +546,20 @@ class MainWindow(QMainWindow):
             self.total_pages_label.setText(f" / {total}")
             self.minimap_widget.select_page(self.viewer.current_page)
         
+        # Sync zoom slider
+        self._sync_zoom_slider()
+        
         # Save reading progress and load notes
         if self.viewer.renderer.doc:
             doc_path = self.viewer.renderer.doc.name
             self.user_data.set_last_read_page(doc_path, self.viewer.current_page)
             
             note_text = self.user_data.get_note(doc_path, self.viewer.current_page)
-            # update UI without triggering save
             self.notes_edit.blockSignals(True)
             self.notes_edit.setPlainText(note_text)
             self.notes_edit.blockSignals(False)
+
+    # ── Callbacks ────────────────────────────────────────────────
 
     def _on_notes_changed(self):
         if self.viewer.renderer.doc:
@@ -411,7 +577,6 @@ class MainWindow(QMainWindow):
             
     def _on_comment_requested(self, rect: QRect):
         if self.viewer.renderer.doc:
-            # Revert UI scale mapping to get the underlying PDF text
             import fitz
             pdf_rect = fitz.Rect(
                 rect.left() / self.viewer.zoom,
@@ -422,8 +587,9 @@ class MainWindow(QMainWindow):
             page = self.viewer.renderer.doc.load_page(self.viewer.current_page)
             words = page.get_text("text", clip=pdf_rect)
             
-            # Show the dock if it's hidden and prompt the user to comment on the text
             self.notes_dock.show()
+            if hasattr(self, 'notes_btn'):
+                self.notes_btn.setChecked(True)
             current_note = self.notes_edit.toPlainText()
             separator = "\n\n" if current_note else ""
             
@@ -435,7 +601,6 @@ class MainWindow(QMainWindow):
                 self.notes_edit.setPlainText(current_note + injection)
                 self.notes_edit.blockSignals(False)
                 
-                # Move cursor to end
                 cursor = self.notes_edit.textCursor()
                 cursor.movePosition(cursor.MoveOperation.End)
                 self.notes_edit.setTextCursor(cursor)
@@ -444,13 +609,11 @@ class MainWindow(QMainWindow):
     def _on_page_input_entered(self):
         try:
             val = int(self.page_input.text().strip())
-            # Convert UI 1-index back to 0-index internally
             target_idx = val - 1
             if self.viewer.renderer.doc and 0 <= target_idx < self.viewer.renderer.get_page_count():
                 self.viewer.current_page = target_idx
                 self.viewer.render_current_page()
             else:
-                # Revert if bounds are invalid
                 self.page_input.setText(str(self.viewer.current_page + 1))
         except ValueError:
             self.page_input.setText(str(self.viewer.current_page + 1))

@@ -2,6 +2,15 @@
 
 This document tracks all features, architectural changes, and bug fixes applied to DarkPDF.
 
+## [v1.5.0] - Stability, Testing, & Undo Mechanics
+- **Added** an internal 20-step Undo Stack! Pressing `Ctrl + Z` seamlessly restores previous annotation states (Highlights & Erases).
+- **Added** a comprehensive Automated Test Suite (53 Tests) using `pytest` covering the `ViewerController`, `UserDataManager`, `PDFRenderer`, and `MainWindow` GUI.
+- **Redesigned** the Toolbar UI into a sleek, labeled vertical dock mimicking modern IDE layouts for better readability without losing screen real-estate.
+- **Added** explicit global keyboard shortcuts, including `Ctrl+Z` (Undo), `Ctrl+N` (Toggle Notes), `Ctrl+E` (Eraser), `Ctrl+D` (Dark Mode), and `Ctrl+Home` (Home Screen).
+- **Added** a dynamic Zoom slider ranging from 25% to 300%.
+- **Fixed** a critical dangling reference crash where opening a PDF, returning to the Home Screen, and reopening the PDF would instantly kill the app due to `setCentralWidget` actively destroying the `QScrollArea`. Resolved natively by migrating to a `QStackedWidget` layout core.
+- **Fixed** the "Resume Reading" auto-resumption bug. PyMuPDF renders were quietly overwriting the tracked page progress array upon opening. Opening files now correctly restores your last-read page directly without overwriting `index 0`.
+
 ## [v1.4.0] - UI Refinement & Interactive Tools
 - **Moved** Navigation sidebar and Minimap entirely to the Right Side of the window for better layout coherence next to the notes.
 - **Added** an Eraser mode logic! Users can now drag a box over existing annotations to remove them from the underlying PyMuPDF instance.
