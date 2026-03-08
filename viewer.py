@@ -1,6 +1,9 @@
 from PySide6.QtCore import QObject, Signal, QRect
 from PySide6.QtGui import QImage
 import fitz
+import os
+import tempfile
+import shutil
 
 from renderer import PDFRenderer
 from utils.image_utils import get_qimage
@@ -50,10 +53,39 @@ class ViewerController(QObject):
             self.current_page -= 1
             self.render_current_page()
 
-    def set_zoom(self, zoom: float):
-        if 0.1 <= zoom <= 10.0:
-            self.zoom = zoom
-            self.render_current_page()
+    def _safe_save_document(self):
+        """Attempts incremental save, falls back to full save + reopen if corrupted or repaired."""
+        if not self.renderer.doc:
+            return
+            
+        filepath = self.renderer.doc.name
+        try:
+            if not self.renderer.doc.is_repaired:
+                self.renderer.doc.saveIncr()
+                return
+        except Exception:
+            pass # Fallback to full save
+            
+        # Full save fallback
+        # 1. Save to a temporary file
+        fd, temp_path = tempfile.mkstemp(suffix=".pdf")
+        os.close(fd)
+        
+        try:
+            self.renderer.doc.save(temp_path)
+            
+            # 2. To overwrite the original file we must close it first
+            self.renderer.doc.close()
+            
+            # 3. Replace original with temp
+            shutil.move(temp_path, filepath)
+            
+            # 4. Reopen document transparently
+            self.renderer.load_document(filepath)
+        except Exception as e:
+            print(f"Critical error saving PDF: {e}")
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
 
     def add_highlight(self, rect: QRect):
         if self.renderer.doc:
@@ -79,14 +111,7 @@ class ViewerController(QObject):
             annot.set_opacity(0.4)
             annot.update()
             
-            # Save Document safely (catch Coder=4 error on repaired docs)
-            try:
-                if not self.renderer.doc.is_repaired:
-                    self.renderer.doc.saveIncr()
-            except Exception as e:
-                print(f"Warning: Could not automatically save highlight: {e}")
-            
-            # Rerender to show highlights immediately
+            self._safe_save_document()
             self.render_current_page()
 
     def erase_highlight(self, rect: QRect):
@@ -104,10 +129,5 @@ class ViewerController(QObject):
                 if annot.rect.intersects(pdf_rect):
                     page.delete_annot(annot)
                     
-            try:
-                if not self.renderer.doc.is_repaired:
-                    self.renderer.doc.saveIncr()
-            except Exception as e:
-                print(f"Warning: Could not automatically save highlight deletion: {e}")
-                
+            self._safe_save_document()
             self.render_current_page()

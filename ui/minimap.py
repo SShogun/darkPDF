@@ -11,10 +11,10 @@ class MinimapWidget(QListWidget):
         self.renderer = renderer
         
         self.setViewMode(QListView.ViewMode.IconMode)
-        self.setIconSize(QSize(100, 150))
+        self.setIconSize(QSize(60, 85))
         self.setResizeMode(QListView.ResizeMode.Adjust)
         self.setMovement(QListView.Movement.Static)
-        self.setSpacing(10)
+        self.setSpacing(5)
         self.setStyleSheet(
             "QListWidget { background-color: transparent; border: none; outline: 0; }"
             "QListWidget::item { background-color: #222; border-radius: 5px; padding: 5px; }"
@@ -32,7 +32,7 @@ class MinimapWidget(QListWidget):
         # Render a tiny thumbnail of each page
         # Note: This loads all thumbnails synchronously, which is okay for small PDFs.
         # For huge PDFs we'd want a background thread, but this works for MVP.
-        zoom = 0.1
+        zoom = 0.05
         for i in range(page_count):
             pix = self.renderer.get_page_pixmap(i, zoom=zoom)
             
