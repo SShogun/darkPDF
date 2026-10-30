@@ -104,10 +104,11 @@ class ViewerController(QObject):
         page_index, old_annots = self._undo_stack.pop()
         page = self.renderer.doc.load_page(page_index)
 
-        # Remove all current annotations on the page
+        # Undo only the annotation type managed by the highlighter.
         current_annots = list(page.annots())
         for annot in current_annots:
-            page.delete_annot(annot)
+            if annot.type[0] == fitz.PDF_ANNOT_HIGHLIGHT:
+                page.delete_annot(annot)
 
         # Restore old annotations
         if old_annots:
@@ -229,9 +230,9 @@ class ViewerController(QObject):
             )
             page = self.renderer.doc.load_page(self.current_page)
             
-            # Delete any annotations intersecting the eraser box
-            for annot in page.annots():
-                if annot.rect.intersects(pdf_rect):
+            # The highlighter eraser must leave other annotation types intact.
+            for annot in list(page.annots()):
+                if annot.type[0] == fitz.PDF_ANNOT_HIGHLIGHT and annot.rect.intersects(pdf_rect):
                     page.delete_annot(annot)
                     
             self._safe_save_document()

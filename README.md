@@ -4,19 +4,19 @@
 [![PySide6](https://img.shields.io/badge/PySide6-Qt-brightgreen.svg)](https://doc.qt.io/qtforpython/)
 [![PyMuPDF](https://img.shields.io/badge/PyMuPDF-PDF-red.svg)](https://pymupdf.readthedocs.io/en/latest/)
 
-**DarkPDF** is a highly optimized, cross-platform desktop application explicitly designed to make long reading sessions at night a comfortable and distraction-free experience. 
+**DarkPDF** is a desktop application explicitly designed to make long reading sessions at night a comfortable and distraction-free experience.
 
-By avoiding simple screen dimming and instead utilizing a blazing-fast localized rendering pipeline, DarkPDF converts the blistering white backgrounds of complex textbooks and documents into soothing darkness while seamlessly preserving the crispness of text anti-aliasing and the original color depth of embedded images and photos.
+By avoiding simple screen dimming and instead utilizing a local rendering pipeline, DarkPDF converts the blistering white backgrounds of complex textbooks and documents into soothing darkness with a heuristic that preserves smaller embedded image regions.
 
 ---
 
 ## ✨ Key Features
 
 ### 🚀 Smart Inversion Engine
-Built directly upon `NumPy` array math and 8-bit unsigned transformations, DarkPDF achieves near-zero latency rendering even on highly complex documents. 
-- **Image Protection:** DarkPDF identifies and protects physical images and diagrams inside the text boundaries from being inverted, so they always look natural while you read.
+Built directly upon `NumPy` array math and 8-bit unsigned transformations, DarkPDF applies an inverted-color transformation to rendered pages.
+- **Image Protection:** DarkPDF uses detected image bounding boxes to preserve smaller image regions; detection is heuristic and does not cover every document.
 - **Auto-Scanned Page Heuristics:** The engine smartly detects scanned documents (where the entire page is technically an image) and forcefully adapts them so you aren't blinded.
-- **Granular Brightness Control:** You have full control over the contrast and brightness of the inversion matrix directly from the toolbar slider.
+- **Granular Brightness Control:** The toolbar provides brightness adjustment for inverted pixels.
 
 ### 📚 Robust Annotations & Persistent State
 Read and review documents how you actually want to:
